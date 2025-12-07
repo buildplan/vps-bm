@@ -1,0 +1,5 @@
+benchmark.log
+benchmark_results.db
+benchmark_latest.json
+.deps_installed
+benchmark_test.fio*
