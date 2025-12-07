@@ -127,7 +127,7 @@ The `benchmark_latest.json` file follows this structure for integration with mon
 
 ```json
 {
-  "version": "0.2.0",
+  "version": "0.1.0",
   "timestamp": "2025-12-07T16:40:35Z",
   "hostname": "server-name",
   "is_docker": false,
