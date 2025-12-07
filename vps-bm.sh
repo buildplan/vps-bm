@@ -3,21 +3,21 @@ set -euo pipefail
 export LC_ALL=C LANG=C
 
 # ============================================================================
-# VPS Benchmark Script with Result Comparison v0.1.0
+# VPS Benchmark Script with Result Comparison v0.2.0
 # ============================================================================
 # Usage:
-#   ./vps-bm.sh.sh              # Run benchmark only
-#   ./vps-bm.sh.sh --save       # Run and save to database
-#   ./vps-bm.sh.sh --compare    # Run, save, and compare with previous
-#   ./vps-bm.sh.sh --list       # List saved benchmark runs
-#   ./vps-bm.sh.sh --quick      # Fast benchmark (reduced test times)
-#   ./vps-bm.sh.sh --json       # Export results as JSON
+#   ./vps-bm.sh              # Run benchmark only
+#   ./vps-bm.sh --save       # Run and save to database
+#   ./vps-bm.sh --compare    # Run, save, and compare with previous
+#   ./vps-bm.sh --list       # List saved benchmark runs
+#   ./vps-bm.sh --quick      # Fast benchmark (reduced test times)
+#   ./vps-bm.sh --json       # Export results as JSON
 # ============================================================================
 
 # --- Constants ---
-readonly SCRIPT_VERSION="0.1.0"
+readonly SCRIPT_VERSION="0.2.0"
 readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-readonly TEST_FILE="${SCRIPT_DIR}/a_testfile"
+readonly TEST_FILE="${SCRIPT_DIR}/benchmark_test.fio"
 readonly DB_FILE="${SCRIPT_DIR}/benchmark_results.db"
 readonly DEPS_MARKER="${SCRIPT_DIR}/.deps_installed"
 readonly LOG_FILE="${SCRIPT_DIR}/benchmark.log"
@@ -42,8 +42,9 @@ INSTALL_SPEEDTEST_CLI="ookla"
 
 # --- Configuration (can be overridden by config file) ---
 CPU_TEST_TIME=10
-DISK_TEST_SIZE=1024  # MB
+DISK_TEST_SIZE="1G"  # FIO format (e.g., 1G, 512M)
 SKIP_NETWORK=0
+SPEEDTEST_SERVER_ID="" # Leave empty for auto-select
 NTFY_ENABLED=0
 NTFY_URL=""
 NTFY_TOKEN=""
@@ -107,7 +108,7 @@ is_docker() {
 
 cleanup() {
   local exit_code=$?
-  [ -f "${TEST_FILE}" ] && rm -f "${TEST_FILE}" || true
+  rm -f "${SCRIPT_DIR}"/benchmark_test.fio* 2>/dev/null || true
   exit ${exit_code}
 }
 
@@ -441,7 +442,7 @@ send_ntfy_notification() {
 check_system_health() {
   log_section "System Health Checks"
 
-  # Check disk space
+  # 1. Check disk space
   local disk_usage
   disk_usage=$(df -h "$SCRIPT_DIR" | awk 'NR==2 {print $5}' | tr -d '%')
   if [ "$disk_usage" -gt 90 ]; then
@@ -451,14 +452,26 @@ check_system_health() {
     printf "%s✓%s Disk usage: %s%%\n" "$GREEN" "$NC" "$disk_usage"
   fi
 
-  # Check load average
+  # 2. Check Storage Location
+  local fs_type
+  fs_type=$(df -T "$SCRIPT_DIR" | awk 'NR==2 {print $2}')
+  if [ "$fs_type" = "tmpfs" ]; then
+    printf "%sWarning: Script is running in TMPFS (RAM Disk). Disk benchmarks will be invalid.%s\n" "$RED" "$NC"
+    printf "Please move this script to a physical disk partition (e.g., /root or /home).\n"
+    # We don't exit, but we warn heavily
+    log_to_file "WARN" "Running on tmpfs"
+  else
+    printf "%s✓%s Storage type: %s (OK)\n" "$GREEN" "$NC" "$fs_type"
+  fi
+
+  # 3. Check load average
   local load_avg cpu_count load_per_cpu
   load_avg=$(uptime | awk -F'load average:' '{print $2}' | awk '{print $1}' | tr -d ',')
   cpu_count=$(nproc)
   load_per_cpu=$(echo "scale=2; $load_avg / $cpu_count" | bc)
   printf "Current load: %s (%.2f per CPU)\n" "$load_avg" "$load_per_cpu"
 
-  # Check if in Docker
+  # 4. Check if in Docker
   if is_docker; then
     printf "%sℹ%s Running in Docker container (some tests may be affected)\n" "$BLUE" "$NC"
     log_to_file "INFO" "Running in Docker container"
@@ -470,7 +483,7 @@ check_system_health() {
 # ============================================================================
 
 verify_all_dependencies() {
-  for tool in sysbench bc sqlite3 curl ioping; do
+  for tool in sysbench bc sqlite3 curl ioping fio; do
     command -v "$tool" &>/dev/null || return 1
   done
   command -v speedtest &>/dev/null || command -v speedtest-cli &>/dev/null || return 1
@@ -493,7 +506,7 @@ check_and_install_dependencies() {
   local missing_deps=0
 
   # Check core tools
-  for tool in sysbench bc sqlite3 curl ioping; do
+  for tool in sysbench bc sqlite3 curl ioping fio; do
     if ! command -v "$tool" &>/dev/null; then
       missing_deps=1
       break
@@ -522,7 +535,7 @@ check_and_install_dependencies() {
   fi
 
   log_info "Dependencies"
-  log_section "Installing missing dependencies (sysbench + speedtest + bc + sqlite3)"
+  log_section "Installing missing dependencies (sysbench + speedtest + bc + sqlite3 + fio)"
   log_to_file "INFO" "Installing dependencies"
 
   if command -v apt-get &>/dev/null; then install_debian_based
@@ -555,8 +568,8 @@ try_install_speedtest_ookla() {
 
 install_debian_based() {
   apt-get update -y || error_exit "Failed to update apt cache"
-  apt-get install -y sysbench curl ca-certificates bc sqlite3 ioping 2>/dev/null || \
-    apt-get install -y sysbench curl ca-certificates bc sqlite3 || \
+  apt-get install -y sysbench curl ca-certificates bc sqlite3 ioping fio 2>/dev/null || \
+    apt-get install -y sysbench curl ca-certificates bc sqlite3 fio || \
     error_exit "Failed to install base packages"
 
   if ! command -v speedtest &>/dev/null; then
@@ -568,8 +581,8 @@ install_debian_based() {
 }
 
 install_fedora_based() {
-  dnf install -y sysbench curl ca-certificates bc sqlite ioping 2>/dev/null || \
-    dnf install -y sysbench curl ca-certificates bc sqlite || true
+  dnf install -y sysbench curl ca-certificates bc sqlite ioping fio 2>/dev/null || \
+    dnf install -y sysbench curl ca-certificates bc sqlite fio || true
 
   if ! command -v sysbench &>/dev/null; then
     dnf install -y epel-release && dnf install -y sysbench
@@ -585,8 +598,8 @@ install_fedora_based() {
 
 install_redhat_based() {
   yum install -y epel-release || true
-  yum install -y sysbench curl ca-certificates bc sqlite ioping 2>/dev/null || \
-    yum install -y sysbench curl ca-certificates bc sqlite || \
+  yum install -y sysbench curl ca-certificates bc sqlite ioping fio 2>/dev/null || \
+    yum install -y sysbench curl ca-certificates bc sqlite fio || \
     error_exit "Failed to install base packages"
 
   if ! command -v speedtest &>/dev/null; then
@@ -622,18 +635,6 @@ install_speedtest_python() {
 # Benchmark Functions
 # ============================================================================
 
-parse_dd() {
-  local dd_output="$1"
-  local speed
-  speed=$(echo "$dd_output" | grep -Eo '[0-9]+(\.[0-9]+)? [GM]B/s' | tail -n 1)
-  if [ -z "$speed" ]; then printf "0"; return 1; fi
-  if echo "$speed" | grep -q "GB/s"; then
-    echo "$speed" | awk '{print $1 * 1024}' | cut -d'.' -f1
-  else
-    echo "$speed" | awk '{print $1}' | cut -d'.' -f1
-  fi
-}
-
 run_cpu_benchmarks() {
   local cpu_out_single
   log_section "CPU Benchmark: Single Thread (${CPU_TEST_TIME}s, max-prime=20000)"
@@ -661,26 +662,69 @@ run_memory_benchmark() {
   log_to_file "INFO" "Memory bandwidth: $memory_mib_s MiB/s"
 }
 
+parse_fio_bw() {
+  local output="$1"
+  local bw_str
+  bw_str=$(echo "$output" | grep -oE 'bw=[0-9.]+[KMG]?B/s' | head -n 1 | cut -d'=' -f2)
+
+  if [ -z "$bw_str" ]; then echo "0"; return; fi
+
+  local value unit
+  value=$(echo "$bw_str" | sed 's/[KMG]B\/s//')
+  unit=$(echo "$bw_str" | sed 's/[0-9.]//g')
+
+  case "$unit" in
+    KB/s) echo "scale=2; $value / 1024" | bc ;;
+    MB/s) echo "$value" ;;
+    GB/s) echo "scale=2; $value * 1024" | bc ;;
+    *) echo "0" ;;
+  esac
+}
+
 run_disk_benchmarks() {
-  local dd_out_buffered
-  log_section "Disk Write (${DISK_TEST_SIZE}MiB, buffered+flush)"
-  dd_out_buffered=$(dd if=/dev/zero of="${TEST_FILE}" bs=1M count="${DISK_TEST_SIZE}" conv=fdatasync status=progress 2>&1 | tail -n 1)
-  echo "$dd_out_buffered"
-  disk_write_buffered_mb_s=$(parse_dd "$dd_out_buffered")
+  if ! command -v fio &>/dev/null; then
+    error_exit "fio not found, cannot run disk benchmarks"
+  fi
 
-  local dd_out_direct
-  log_section "Disk Write (${DISK_TEST_SIZE}MiB, direct I/O)"
-  dd_out_direct=$(dd if=/dev/zero of="${TEST_FILE}" bs=1M count="${DISK_TEST_SIZE}" oflag=direct status=progress 2>&1 | tail -n 1)
-  echo "$dd_out_direct"
-  disk_write_direct_mb_s=$(parse_dd "$dd_out_direct")
+  local ioengine="libaio"
+  if ! fio --ioengine=libaio --parse-only 2>/dev/null; then
+    ioengine="sync"
+    log_to_file "WARN" "libaio not supported by fio, falling back to sync engine"
+  fi
+  log_to_file "INFO" "Using FIO engine: $ioengine"
 
-  local dd_out_read
-  log_section "Disk Read (${DISK_TEST_SIZE}MiB, direct I/O)"
-  dd_out_read=$(dd if="${TEST_FILE}" of=/dev/null bs=1M count="${DISK_TEST_SIZE}" iflag=direct status=progress 2>&1 | tail -n 1)
-  echo "$dd_out_read"
-  disk_read_mb_s=$(parse_dd "$dd_out_read")
+  rm -f "${TEST_FILE}"
 
-  log_to_file "INFO" "Disk - Write Buf: $disk_write_buffered_mb_s MB/s, Write Direct: $disk_write_direct_mb_s MB/s, Read: $disk_read_mb_s MB/s"
+  # Sequential Write
+  log_section "Disk Write (FIO, ${DISK_TEST_SIZE}, Seq, Direct, ${ioengine})"
+  local fio_wd
+  fio_wd=$(fio --name=seqwrite_direct --filename="${TEST_FILE}" --ioengine="$ioengine" --rw=write --bs=1M --size="${DISK_TEST_SIZE}" --numjobs=1 --direct=1 --group_reporting 2>&1)
+
+  # Check for errors in FIO output
+  if echo "$fio_wd" | grep -q "No space left on device"; then
+    error_exit "Not enough disk space for FIO test (${DISK_TEST_SIZE})"
+  fi
+
+  echo "$fio_wd" | grep -E "WRITE: bw="
+  disk_write_direct_mb_s=$(parse_fio_bw "$fio_wd")
+
+  # 2. Sequential Read
+  log_section "Disk Read (FIO, ${DISK_TEST_SIZE}, Seq, Direct, ${ioengine})"
+  local fio_rd
+  fio_rd=$(fio --name=seqread_direct --filename="${TEST_FILE}" --ioengine="$ioengine" --rw=read --bs=1M --size="${DISK_TEST_SIZE}" --numjobs=1 --direct=1 --group_reporting 2>&1)
+  echo "$fio_rd" | grep -E "READ: bw="
+  disk_read_mb_s=$(parse_fio_bw "$fio_rd")
+
+  # 3. Sequential Write (Buffered) - Simulating generic copy
+  log_section "Disk Write (FIO, ${DISK_TEST_SIZE}, Seq, Buffered, ${ioengine})"
+  local fio_wb
+  fio_wb=$(fio --name=seqwrite_buf --filename="${TEST_FILE}" --ioengine="$ioengine" --rw=write --bs=1M --size="${DISK_TEST_SIZE}" --numjobs=1 --direct=0 --group_reporting 2>&1)
+  echo "$fio_wb" | grep -E "WRITE: bw="
+  disk_write_buffered_mb_s=$(parse_fio_bw "$fio_wb")
+
+  rm -f "${TEST_FILE}"
+
+  log_to_file "INFO" "Disk (FIO) - Write Dir: $disk_write_direct_mb_s MB/s, Read Dir: $disk_read_mb_s MB/s, Write Buf: $disk_write_buffered_mb_s MB/s"
 }
 
 run_disk_latency_benchmark() {
@@ -715,17 +759,26 @@ run_network_benchmark() {
   fi
 
   log_section "Network Speed Test (${INSTALL_SPEEDTEST_CLI})"
+
   local out
   local exit_code=0
+  local server_arg=""
+
+  if [ -n "$SPEEDTEST_SERVER_ID" ]; then
+    printf "%sℹ%s Using specific Speedtest Server ID: %s\n" "$BLUE" "$NC" "$SPEEDTEST_SERVER_ID"
+    log_to_file "INFO" "Forcing Speedtest server: $SPEEDTEST_SERVER_ID"
+  fi
 
   if command -v speedtest &>/dev/null; then
-    out=$(timeout 300 speedtest --accept-license --accept-gdpr 2>&1) || exit_code=$?
+    if [ -n "$SPEEDTEST_SERVER_ID" ]; then
+       server_arg="--server-id=${SPEEDTEST_SERVER_ID}"
+    fi
+
+    out=$(timeout 300 speedtest --accept-license --accept-gdpr $server_arg 2>&1) || exit_code=$?
     printf "%s\n" "$out"
 
     if [ $exit_code -ne 0 ]; then
-      printf "%sWarning: Ookla speedtest exited with code %s (upload may have failed)%s\n" \
-             "$YELLOW" "$exit_code" "$NC"
-      log_to_file "WARN" "Ookla speedtest exited with code $exit_code"
+      printf "%sWarning: Ookla speedtest exited with code %s%s\n" "$YELLOW" "$exit_code" "$NC"
     fi
 
     extract_first_number() {
@@ -741,7 +794,11 @@ run_network_benchmark() {
     [ -z "$network_ping_ms" ] && network_ping_ms=$(extract_first_number "^[[:space:]]*Latency:")
 
   elif command -v speedtest-cli &>/dev/null; then
-    out=$(timeout 300 speedtest-cli --simple 2>&1) || exit_code=$?
+    if [ -n "$SPEEDTEST_SERVER_ID" ]; then
+       server_arg="--server ${SPEEDTEST_SERVER_ID}"
+    fi
+
+    out=$(timeout 300 speedtest-cli --simple $server_arg 2>&1) || exit_code=$?
     printf "%s\n" "$out"
 
     if [ $exit_code -ne 0 ]; then
@@ -772,8 +829,8 @@ run_network_benchmark() {
 
   printf "%s✓%s Network speed test complete (Down: %s Mbps, Up: %s Mbps, Ping: %s ms)\n" \
          "$GREEN" "$NC" "$network_download_mbps" "$network_upload_mbps" "$network_ping_ms"
-  log_to_file "INFO" "Network - Down: $network_download_mbps Mbps, Up: $network_upload_mbps Mbps, Ping: $network_ping_ms ms"
 
+  log_to_file "INFO" "Network - Down: $network_download_mbps Mbps, Up: $network_upload_mbps Mbps, Ping: $network_ping_ms ms"
   return 0
 }
 
@@ -817,7 +874,7 @@ display_results() {
   i_d_r=$(get_status_indicator "$disk_read_mb_s")
   i_d_lat=$(get_status_indicator "$disk_latency_us")
 
-  printf "\n%sDisk Performance:%s\n" "$CYAN" "$NC"
+  printf "\n%sDisk Performance (FIO):%s\n" "$CYAN" "$NC"
   printf "  %-20s [%s]: %s%s%s MB/s\n" "Write (Buffered)" "$i_d_wb" "$GREEN" "$disk_write_buffered_mb_s" "$NC"
   printf "  %-20s [%s]: %s%s%s MB/s\n" "Write (Direct)" "$i_d_wd" "$GREEN" "$disk_write_direct_mb_s" "$NC"
   printf "  %-20s [%s]: %s%s%s MB/s\n" "Read (Direct)" "$i_d_r" "$GREEN" "$disk_read_mb_s" "$NC"
@@ -847,10 +904,10 @@ main() {
   # Load configuration
   load_config
 
-  # Apply quick mode adjustments
+  # Quick mode adjustments
   if [ "$OPT_QUICK" -eq 1 ]; then
     CPU_TEST_TIME=5
-    DISK_TEST_SIZE=512
+    DISK_TEST_SIZE="256M"
     log_to_file "INFO" "Quick mode enabled"
   fi
 
