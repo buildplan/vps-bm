@@ -920,9 +920,9 @@ main() {
   printf "%s  VPS Benchmark Script v%s%s\n" "$GREEN" "$SCRIPT_VERSION" "$NC"
   printf "%s============================================%s\n" "$GREEN" "$NC"
 
+  check_and_install_dependencies
   display_system_info
   check_system_health
-  check_and_install_dependencies
 
   log_info "Starting Benchmarks"
   log_to_file "INFO" "=== Benchmark Started ==="
