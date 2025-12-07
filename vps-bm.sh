@@ -665,18 +665,18 @@ run_memory_benchmark() {
 parse_fio_bw() {
   local output="$1"
   local bw_str
-  bw_str=$(echo "$output" | grep -oE 'bw=[0-9.]+[KMG]?B/s' | head -n 1 | cut -d'=' -f2)
+  bw_str=$(echo "$output" | grep -oE 'bw=[0-9.]+[KMG]i?B/s' | head -n 1 | cut -d'=' -f2)
 
   if [ -z "$bw_str" ]; then echo "0"; return; fi
 
   local value unit
-  value=$(echo "$bw_str" | sed 's/[KMG]B\/s//')
+  value=$(echo "$bw_str" | sed 's/[KMG]i\?B\/s//')
   unit=$(echo "$bw_str" | sed 's/[0-9.]//g')
 
   case "$unit" in
-    KB/s) echo "scale=2; $value / 1024" | bc ;;
-    MB/s) echo "$value" ;;
-    GB/s) echo "scale=2; $value * 1024" | bc ;;
+    KiB/s|KB/s) echo "scale=2; $value / 1024" | bc ;;
+    MiB/s|MB/s) echo "$value" ;;
+    GiB/s|GB/s) echo "scale=2; $value * 1024" | bc ;;
     *) echo "0" ;;
   esac
 }
