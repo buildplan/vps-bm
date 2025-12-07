@@ -38,7 +38,7 @@ Root access required for initial dependency installation only.
 
 ```bash
 git clone https://github.com/buildplan/vps-bm.git
-cd vps-benchmark
+cd vps-bm
 chmod +x vps-bm.sh
 ```
 
