@@ -323,6 +323,11 @@ compare_metric() {
     return
   fi
 
+  if (( $(echo "$previous == 0" | bc -l) )) || (( $(echo "$previous < 0.01 && $previous > -0.01" | bc -l) )); then
+    printf "  %-25s: %s → %s %s(new baseline)%s\n" "$name" "$previous" "$current" "$BLUE" "$NC"
+    return
+  fi
+
   local diff abs_diff
   diff=$(echo "scale=2; (($current - $previous) / $previous) * 100" | bc)
   abs_diff=$(echo "$diff" | tr -d '-')
